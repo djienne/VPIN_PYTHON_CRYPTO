@@ -60,11 +60,13 @@ def make_volume_buckets(df_1m, bucket_size):
     
     times = df_1m["open_time"].values
     closes = df_1m["close"].values
-    total_vols = df_1m["volume"].values
-    buy_vols = df_1m["taker_buy_base_asset_volume"].values
-    
-    # Sell vol = Total - Buy. Clip to 0 to be safe.
-    sell_vols = np.maximum(0, total_vols - buy_vols)
+    total_vols = df_1m["volume"].values.astype(float)
+    buy_vols_raw = df_1m["taker_buy_base_asset_volume"].values.astype(float)
+
+    # Clamp taker-buy volume to [0, total] to avoid anomalies where buy > total.
+    buy_vols = np.minimum(np.maximum(buy_vols_raw, 0.0), total_vols)
+    # Sell vol = Total - Buy (non-negative by construction).
+    sell_vols = total_vols - buy_vols
     
     for i in range(len(df_1m)):
         total_vol = total_vols[i]
@@ -133,8 +135,16 @@ def calculate_vpin_metric(buckets_df, bucket_size, window_n=50, cdf_lookback_day
     
     window_str = f"{cdf_lookback_days}D"
     
-    # Simple lambda for percentile rank (<= current value) within the lookback window
-    rank_func = lambda x: (x <= x[-1]).mean()
+    # Percentile rank (<= current value) within the lookback window.
+    # Ignore NaNs in the window, but return NaN if the current value is NaN.
+    def rank_func(x):
+        current = x[-1]
+        if np.isnan(current):
+            return np.nan
+        x = x[~np.isnan(x)]
+        if x.size == 0:
+            return np.nan
+        return (x <= current).mean()
     
     # Note: rolling().apply() passes numpy array if raw=True.
     # x[-1] is the current value (right edge of window).

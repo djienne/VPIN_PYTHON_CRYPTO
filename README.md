@@ -1,6 +1,6 @@
 # VPIN Calculator (Binance 1m)
 
-Compute the Volume-Synchronized Probability of Informed Trading (VPIN) for Binance symbols using 1-minute klines. The scripts fetch/cach historical data, build volume buckets, calculate VPIN plus a rolling CDF “toxicity” score, and plot the results.
+Compute the Volume-Synchronized Probability of Informed Trading (VPIN) for Binance symbols using 1-minute klines. The scripts fetch/cache historical data, build volume buckets, calculate VPIN plus a rolling CDF “toxicity” score, and plot the results.
 
 ## Repository contents
 - `market_data.py` – async downloader for 1m klines with retry/backoff; maintains a feather cache (`bnbusdt_1m.feather`) and can back/forward fill gaps.
@@ -48,6 +48,9 @@ This will:
 - Compute VPIN and a rolling CDF percentile.
 - Save `vpin_results.csv`, `vpin_plot.png`, and `vpin_plot_oct_zoom.png` (center date is set in the script; adjust if desired).
 
+### Sample output (Oct zoom)
+![VPIN plot with price, VPIN, and CDF](vpin_plot_oct_zoom.png)
+
 ## Interpreting results
 - VPIN is between 0 and 1; higher values indicate greater order-flow imbalance.
 - The CDF line gives a percentile of current VPIN vs. recent history (`cdf_lookback_days` window). Rule-of-thumb alerts:
@@ -56,11 +59,9 @@ This will:
   - > 0.99: extreme (potential liquidity stress/flow toxicity)
 
 ## Methodology snapshot
-- Volume bucket size: `V = ADV / bucket_target_bars_per_day` (ADV from Binance daily data; falls back to local data).
-- Bucketing: candles are split fractionally so each bucket sums to `V` base units.
-- Order flow imbalance: `OI = |buy_volume - sell_volume|` per bucket.
-- VPIN: rolling sum of `OI` over `vpin_window` buckets divided by `vpin_window * V`.
-- CDF: rolling percentile rank of VPIN over `cdf_lookback_days` to contextualize toxicity.
+- Bucket size: `V = ADV / bucket_target_bars_per_day` (or override).
+- Candles are split fractionally to form constant‑volume buckets of size `V`.
+- `VPIN_t = sum(|B−S|)/(n*V)` over `vpin_window`; CDF percentile over `cdf_lookback_days`.
 
 ## Notes
 - If you point `symbol` to something other than the cached data, run `market_data.py` first to build a fresh feather file.
