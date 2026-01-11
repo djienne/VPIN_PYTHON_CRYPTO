@@ -8,8 +8,11 @@ from datetime import datetime, timedelta
 # --- Constants ---
 BINANCE_BASE_URL = "https://api.binance.com"
 MAX_RETRIES = 5
-CONCURRENT_REQUESTS = 10 
-DATA_FILE = "bnbusdt_1m.feather"
+CONCURRENT_REQUESTS = 10
+
+def get_data_file(symbol):
+    """Return the feather cache filename for a given symbol."""
+    return f"{symbol.lower()}_1m.feather"
 
 async def fetch_kline_chunk(session, symbol, interval, start_time, end_time, limit=1000):
     """
@@ -104,21 +107,22 @@ def manage_local_data(symbol, interval="1m", start_date_dt=None):
     Load local feather file, update it with new data (forward and backward), and save back.
     Ensures no duplicates and checks for gaps.
     """
+    data_file = get_data_file(symbol)
     df_existing = pd.DataFrame()
     now_ts = datetime.now()
-    
+
     # 1. Load existing
-    if os.path.exists(DATA_FILE):
+    if os.path.exists(data_file):
         try:
-            df_existing = pd.read_feather(DATA_FILE)
-            print(f"Loaded {len(df_existing)} rows from {DATA_FILE}")
+            df_existing = pd.read_feather(data_file)
+            print(f"Loaded {len(df_existing)} rows from {data_file}")
         except Exception as e:
             print(f"Error loading cache: {e}. Starting fresh.")
     
     # 1b. Skip downloads if the cache was updated recently
     if not df_existing.empty:
         try:
-            mtime = datetime.fromtimestamp(os.path.getmtime(DATA_FILE))
+            mtime = datetime.fromtimestamp(os.path.getmtime(data_file))
             if now_ts - mtime < timedelta(minutes=15):
                 print(f"Last data update was {mtime} (<15 minutes ago). Skipping downloads.")
                 return df_existing
@@ -142,7 +146,7 @@ def manage_local_data(symbol, interval="1m", start_date_dt=None):
             forward_start_ts = int(start_date_dt.timestamp() * 1000)
         else:
             # Default to 2 days ago if no start date provided and no existing data
-            forward_start_ts = int((current_now - timedelta(days=2)).timestamp() * 1000)
+            forward_start_ts = int((now_ts - timedelta(days=2)).timestamp() * 1000)
 
     if forward_start_ts < end_ts:
         print(f"Checking for new data from {datetime.fromtimestamp(forward_start_ts/1000)}...")
@@ -194,14 +198,26 @@ def manage_local_data(symbol, interval="1m", start_date_dt=None):
     else:
         print("Data continuity check passed (no gaps > 1m).")
         
-    df_combined.to_feather(DATA_FILE)
-    print(f"Saved updated data to {DATA_FILE}")
+    df_combined.to_feather(data_file)
+    print(f"Saved updated data to {data_file}")
     
     return df_combined
 
+
+async def get_adv_async(symbol, days=90):
+    """
+    Quick async fetch for daily data to compute ADV.
+    """
+    end_ts = int(datetime.now().timestamp() * 1000)
+    start_ts = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
+    df = await download_historical_data_async(symbol, "1d", start_ts, end_ts)
+    if df.empty:
+        raise ValueError("Could not fetch daily data for ADV")
+    return df["volume"].mean()
+
+
 if __name__ == "__main__":
     import json
-    import asyncio
     
     # Load config if available, else defaults
     config_path = "config.json"
@@ -225,15 +241,3 @@ if __name__ == "__main__":
         
     print(f"--- Starting Standalone Data Download for {symbol} ---")
     manage_local_data(symbol, "1m", start_date_dt=start_dt)
-
-
-async def get_adv_async(symbol, days=90):
-    """
-    Quick async fetch for daily data to compute ADV.
-    """
-    end_ts = int(datetime.now().timestamp() * 1000)
-    start_ts = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
-    df = await download_historical_data_async(symbol, "1d", start_ts, end_ts)
-    if df.empty:
-        raise ValueError("Could not fetch daily data for ADV")
-    return df["volume"].mean()

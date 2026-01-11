@@ -19,7 +19,11 @@ DEFAULT_CONFIG = {
     "bucket_size_base": None,
     "vpin_window": 50,
     "cdf_lookback_days": 90,
-    "start_date": "2025-01-01"
+    "start_date": "2025-01-01",
+    # Include partial final bucket if >10% filled (default False to match original behavior)
+    "include_partial_bucket": False,
+    # Center date for zoom plot (YYYY-MM-DD format, or null to use data midpoint)
+    "zoom_center_date": None
 }
 
 def load_config():
@@ -39,11 +43,18 @@ BUCKET_SIZE_BASE = CONFIG.get("bucket_size_base")
 VPIN_WINDOW = CONFIG.get("vpin_window", 50)
 CDF_LOOKBACK_DAYS = CONFIG.get("cdf_lookback_days", 90)
 START_DATE_STR = CONFIG.get("start_date", "2025-01-01")
+INCLUDE_PARTIAL_BUCKET = CONFIG.get("include_partial_bucket", False)
+ZOOM_CENTER_DATE = CONFIG.get("zoom_center_date")
 
-def make_volume_buckets(df_1m, bucket_size):
+def make_volume_buckets(df_1m, bucket_size, include_partial=False):
     """
     Resample 1-minute klines into Volume Buckets.
     Uses base asset volume (Binance fields: Volume, Taker buy base asset volume).
+
+    Args:
+        df_1m: DataFrame with 1-minute klines
+        bucket_size: Target volume for each bucket
+        include_partial: If True, include the final partially-filled bucket (default False)
     """
     buckets = []
     
@@ -101,17 +112,31 @@ def make_volume_buckets(df_1m, bucket_size):
 
             if volume_remaining <= 1e-12:
                 buckets.append({
-                    "time": current_bucket_start_time, 
+                    "time": current_bucket_start_time,
                     "buy_volume": current_bucket_buy,
                     "sell_volume": current_bucket_sell,
                     "total_volume": current_bucket_buy + current_bucket_sell,
                     "price": current_price
                 })
-                
+
                 current_bucket_buy = 0.0
                 current_bucket_sell = 0.0
                 volume_remaining = bucket_size
                 current_bucket_start_time = None
+
+    # Include partial final bucket if requested and there's meaningful volume
+    if include_partial and current_bucket_start_time is not None:
+        partial_volume = current_bucket_buy + current_bucket_sell
+        if partial_volume > bucket_size * 0.1:  # Only include if >10% filled
+            buckets.append({
+                "time": current_bucket_start_time,
+                "buy_volume": current_bucket_buy,
+                "sell_volume": current_bucket_sell,
+                "total_volume": partial_volume,
+                "price": current_price,
+                "partial": True  # Flag to indicate this is incomplete
+            })
+            print(f"Included partial final bucket ({partial_volume/bucket_size*100:.1f}% filled)")
 
     return pd.DataFrame(buckets)
 
@@ -344,7 +369,7 @@ def main():
     # 2. Determine bucket size (base units) and build volume buckets
     allow_adv_download = True
     try:
-        mtime = datetime.fromtimestamp(os.path.getmtime(market_data.DATA_FILE))
+        mtime = datetime.fromtimestamp(os.path.getmtime(market_data.get_data_file(SYMBOL)))
         if datetime.now() - mtime < timedelta(minutes=15):
             allow_adv_download = False
     except Exception as e:
@@ -363,7 +388,7 @@ def main():
         print("Unable to determine bucket size; aborting.")
         return
 
-    buckets_df = make_volume_buckets(df_1m, bucket_size_base)
+    buckets_df = make_volume_buckets(df_1m, bucket_size_base, include_partial=INCLUDE_PARTIAL_BUCKET)
     print(f"Created {len(buckets_df)} volume buckets.")
     
     if len(buckets_df) < VPIN_WINDOW:
@@ -378,7 +403,21 @@ def main():
     print(vpin_df[["time", "VPIN", "CDF"]].dropna().tail(10))
     
     plot_vpin(vpin_df, SYMBOL, bucket_size_base, CDF_LOOKBACK_DAYS)
-    plot_vpin_zoom_range(vpin_df, SYMBOL, bucket_size_base, CDF_LOOKBACK_DAYS, center_date="2025-10-10", days_window=15, output_path="vpin_plot_oct_zoom.png")
+
+    # Determine zoom center date: use config, or fall back to data midpoint
+    if ZOOM_CENTER_DATE:
+        zoom_date = ZOOM_CENTER_DATE
+    else:
+        # Use midpoint of available data
+        valid_times = vpin_df.dropna(subset=["VPIN"])["time"]
+        if not valid_times.empty:
+            mid_idx = len(valid_times) // 2
+            zoom_date = valid_times.iloc[mid_idx].strftime("%Y-%m-%d")
+        else:
+            zoom_date = None
+
+    if zoom_date:
+        plot_vpin_zoom_range(vpin_df, SYMBOL, bucket_size_base, CDF_LOOKBACK_DAYS, center_date=zoom_date, days_window=15, output_path="vpin_plot_zoom.png")
     vpin_df.to_csv("vpin_results.csv", index=False)
     print("Saved results to vpin_results.csv")
 

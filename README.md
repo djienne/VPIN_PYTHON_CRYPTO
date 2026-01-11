@@ -6,7 +6,8 @@ Compute the Volume-Synchronized Probability of Informed Trading (VPIN) for Binan
 - `market_data.py` – async downloader for 1m klines with retry/backoff; maintains a feather cache (`bnbusdt_1m.feather`) and can back/forward fill gaps.
 - `vpin_calculator.py` – builds volume buckets, computes VPIN and rolling CDF, saves CSV results, and generates plots.
 - `config.json` – runtime parameters (symbol, bucket sizing, windows, start date).
-- `info_VPIN.md` – notes on the VPIN methodology and formulas.
+- `docs/` – contains detailed VPIN methodology notes (`VPIN_info_*.md`).
+- `consistency_report.md` & `consistency_report_book.md` – verification reports checking code against theoretical documentation.
 - `bnbusdt_1m.feather` – cached sample 1m data; `vpin_results.csv`, `vpin_plot.png`, `vpin_plot_oct_zoom.png` are sample outputs.
 
 ## Requirements
@@ -61,9 +62,10 @@ This will:
 ## Methodology snapshot
 - Bucket size: `V = ADV / bucket_target_bars_per_day` (or override).
 - Candles are split fractionally to form constant‑volume buckets of size `V`.
+- **Bucket Pricing:** Uses **Median Price** `(High + Low) / 2` for each bucket (aligned with Chapter 22 recommendations).
 - `VPIN_t = sum(|B−S|)/(n*V)` over `vpin_window`; CDF percentile over `cdf_lookback_days`.
 
 ## Notes
 - If you point `symbol` to something other than the cached data, run `market_data.py` first to build a fresh feather file.
 - The downloader is conservative with request pacing but Binance rate limits still apply; very long histories may need multiple runs.
-- See `info_VPIN.md` for a fuller explanation of the algorithm and thresholds.
+- See `docs/` for methodology details and `consistency_report_book.md` for verification against the standard literature.
