@@ -51,7 +51,7 @@ This will:
 - Save `vpin_results.csv`, `vpin_plot.png`, and `vpin_plot_oct_zoom.png` (center date is set in the script; adjust if desired).
 
 ### Sample output (Oct zoom)
-![VPIN plot with price, VPIN, and CDF](vpin_plot_oct_zoom.png)
+![VPIN plot with price, VPIN, and CDF](vpin_plot_zoom.png)
 
 ## Interpreting results
 - VPIN is between 0 and 1; higher values indicate greater order-flow imbalance.
