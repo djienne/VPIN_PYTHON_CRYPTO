@@ -50,7 +50,7 @@ This will:
 - Compute VPIN and a rolling CDF percentile.
 - Save `vpin_results.csv`, `vpin_plot.png`, and `vpin_plot_oct_zoom.png` (center date is set in the script; adjust if desired).
 
-### Sample output (Oct zoom)
+### Sample output
 ![VPIN plot with price, VPIN, and CDF](vpin_plot_zoom.png)
 
 ## Interpreting results
