@@ -1,14 +1,15 @@
 # VPIN Calculator (Binance 1m)
 
-Compute the Volume-Synchronized Probability of Informed Trading (VPIN) for Binance symbols using 1-minute klines. The scripts fetch/cache historical data, build volume buckets, calculate VPIN plus a rolling CDF “toxicity” score, and plot the results.
+Compute the Volume-Synchronized Probability of Informed Trading (VPIN) for Binance symbols using 1-minute klines. The scripts fetch/cache historical data, build volume buckets, calculate VPIN plus a rolling CDF "toxicity" score, and plot the results. Includes a backtest framework to optimize parameters for drawdown avoidance.
 
 ## Repository contents
 - `market_data.py` – async downloader for 1m klines with retry/backoff; maintains a feather cache (`bnbusdt_1m.feather`) and can back/forward fill gaps.
 - `vpin_calculator.py` – builds volume buckets, computes VPIN and rolling CDF, saves CSV results, and generates plots.
+- `vpin_backtest.py` – backtests a VPIN-based exit strategy (exit when CDF >= 0.99, 2-day cooldown) with parameter sweeps.
+- `vpin_optuna_optimize.py` – Bayesian optimization (Optuna) to find parameters maximizing avoided drawdown.
 - `config.json` – runtime parameters (symbol, bucket sizing, windows, start date).
 - `docs/` – contains detailed VPIN methodology notes (`VPIN_info_*.md`).
 - `consistency_report.md` & `consistency_report_book.md` – verification reports checking code against theoretical documentation.
-- `bnbusdt_1m.feather` – cached sample 1m data; `vpin_results.csv`, `vpin_plot.png`, `vpin_plot_oct_zoom.png` are sample outputs.
 
 ## Requirements
 - Python 3.10+
@@ -64,6 +65,40 @@ This will:
 - Candles are split fractionally to form constant‑volume buckets of size `V`.
 - **Bucket Pricing:** Uses **Median Price** `(High + Low) / 2` for each bucket (aligned with Chapter 22 recommendations).
 - `VPIN_t = sum(|B−S|)/(n*V)` over `vpin_window`; CDF percentile over `cdf_lookback_days`.
+
+## Backtest & Parameter Optimization
+
+The repository includes tools to backtest a VPIN-based trading strategy and optimize parameters.
+
+### Strategy
+- **Default position**: Always long (exposed to market)
+- **Exit signal**: When VPIN CDF >= 0.99 (extreme toxicity)
+- **Cooldown**: Stay out of market for 2 days after exit
+- **Re-entry**: Automatically re-enter after cooldown
+
+### Running the backtest
+```bash
+python vpin_backtest.py      # Grid search over parameter combinations
+python vpin_optuna_optimize.py  # Bayesian optimization (Optuna)
+```
+
+### Optimized Parameters (BNBUSDT 2020-2026)
+Using Optuna to maximize cumulative avoided drawdown with >= 30 exit signals:
+
+| Parameter | Optimized Value |
+|-----------|-----------------|
+| Buckets per day | 252 |
+| VPIN Window | 10 |
+| Cumulative Avoided DD | 1607.4% |
+| Signal Success Rate | 95.2% |
+| Total Exits | 334 |
+
+These parameters are now the defaults in `config.json`.
+
+### Output files
+- `vpin_backtest_results.csv` – grid search results
+- `vpin_optuna_results.csv` – Optuna trial results
+- `vpin_backtest_equity.png` – equity curve comparison vs buy-and-hold
 
 ## Notes
 - If you point `symbol` to something other than the cached data, run `market_data.py` first to build a fresh feather file.

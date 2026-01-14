@@ -2,3 +2,5 @@ docs/book_VPIN.pdf
 *.feather
 __pycache__/
 *.pyc
+vpin_results.csv
+tmpclaude-*

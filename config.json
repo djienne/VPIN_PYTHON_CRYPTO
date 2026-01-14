@@ -1,9 +1,9 @@
 {
     "symbol": "BNBUSDT",
-    "bucket_target_bars_per_day": 200,
+    "bucket_target_bars_per_day": 252,
     "adv_lookback_days": 90,
     "bucket_size_base": null,
-    "vpin_window": 225,
+    "vpin_window": 10,
     "cdf_lookback_days": 90,
     "start_date": "2020-01-01",
     "zoom_center_date": "2025-10-10"
