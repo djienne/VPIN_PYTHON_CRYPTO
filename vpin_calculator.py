@@ -24,7 +24,9 @@ DEFAULT_CONFIG = {
     # Include partial final bucket if >10% filled (default False to match original behavior)
     "include_partial_bucket": False,
     # Center date for zoom plot (YYYY-MM-DD format, or null to use data midpoint)
-    "zoom_center_date": None
+    "zoom_center_date": None,
+    # Recent zoom lookback (days) ending at latest timestamp
+    "latest_zoom_days_back": 14
 }
 
 def load_config():
@@ -46,6 +48,7 @@ CDF_LOOKBACK_DAYS = CONFIG.get("cdf_lookback_days", 90)
 START_DATE_STR = CONFIG.get("start_date", "2025-01-01")
 INCLUDE_PARTIAL_BUCKET = CONFIG.get("include_partial_bucket", False)
 ZOOM_CENTER_DATE = CONFIG.get("zoom_center_date")
+LATEST_ZOOM_DAYS_BACK = CONFIG.get("latest_zoom_days_back", 14)
 
 def make_volume_buckets(df_1m, bucket_size, include_partial=False):
     """
@@ -407,6 +410,64 @@ def plot_vpin_zoom_range(vpin_df, symbol, bucket_size, cdf_window_days, center_d
     plt.savefig(output_path)
     print(f"Zoom plot saved to {output_path}")
 
+def plot_vpin_recent_range(vpin_df, symbol, bucket_size, cdf_window_days, days_back=14, output_path="vpin_plot_zoom_latest.png"):
+    """
+    Plot the most recent window ending at the latest timestamp.
+    """
+    plot_data = vpin_df.dropna(subset=["VPIN", "CDF"]).sort_values("time")
+    if plot_data.empty:
+        print("No VPIN data to plot for recent window.")
+        return
+
+    latest_time = plot_data["time"].max()
+    start_dt = latest_time - pd.Timedelta(days=days_back)
+
+    subset = plot_data[(plot_data["time"] >= start_dt) & (plot_data["time"] <= latest_time)]
+    if subset.empty:
+        print(f"No data in recent window {start_dt} to {latest_time}; skipping recent zoom plot.")
+        return
+
+    latest_label = latest_time.strftime("%Y-%m-%d")
+
+    fig, (ax0, ax1, ax2) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [2, 2, 2]})
+
+    ax0.plot(subset["time"], subset["price"], label="Price", color='black', linewidth=1)
+    ax0.set_title(f"{symbol} Price (Last {days_back}d ending {latest_label})")
+    ax0.set_ylabel("Price")
+    ax0.grid(True, which='both', linestyle='--', linewidth=0.5)
+    ax0.legend(loc='upper left')
+
+    ax1.plot(subset["time"], subset["VPIN"], label="VPIN", color='blue', linewidth=1)
+    ax1.set_title(f"VPIN Metric (Bucket: {bucket_size:,.0f} base units)")
+    ax1.set_ylabel("VPIN Value")
+    ax1.grid(True, which='both', linestyle='--', linewidth=0.5)
+    ax1.legend(loc='upper left')
+
+    ax2.plot(subset["time"], subset["CDF"], label=f"CDF ({cdf_window_days}d Rolling)", color='purple', linewidth=1)
+    ax2.set_title("VPIN CDF (Toxicity Probability)")
+    ax2.set_ylabel("CDF Percentile")
+    ax2.set_xlabel("Date")
+    ax2.set_ylim(0, 1.05)
+    ax2.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+    ax2.axhline(y=0.90, color='gold', linestyle='--', label="> 0.90 (Elevated)")
+    ax2.axhline(y=0.95, color='orange', linestyle='--', label="> 0.95 (High)")
+    ax2.axhline(y=0.99, color='red', linestyle='-', label="> 0.99 (Extreme)")
+
+    spans = _find_toxic_spans(subset, threshold=0.99)
+    shaded = False
+    for start, end in spans:
+        ax0.axvspan(start, end, color="red", alpha=0.1, label="CDF > 0.99" if not shaded else None)
+        ax1.axvspan(start, end, color="red", alpha=0.05)
+        ax2.axvspan(start, end, color="red", alpha=0.05)
+        shaded = True
+
+    ax2.legend(loc='lower right')
+
+    plt.tight_layout()
+    plt.savefig(output_path)
+    print(f"Recent zoom plot saved to {output_path}")
+
 def compute_bucket_size_base(df_1m, symbol, target_bars_per_day, adv_lookback_days, override=None, allow_adv_download=True):
     """
     Determine bucket size V in base units (ADV / target_bars_per_day).
@@ -513,6 +574,16 @@ def main():
 
     if zoom_date:
         plot_vpin_zoom_range(vpin_df, SYMBOL, bucket_size_base, CDF_LOOKBACK_DAYS, center_date=zoom_date, days_window=15, output_path="vpin_plot_zoom.png")
+
+    if LATEST_ZOOM_DAYS_BACK and LATEST_ZOOM_DAYS_BACK > 0:
+        plot_vpin_recent_range(
+            vpin_df,
+            SYMBOL,
+            bucket_size_base,
+            CDF_LOOKBACK_DAYS,
+            days_back=LATEST_ZOOM_DAYS_BACK,
+            output_path="vpin_plot_zoom_latest.png"
+        )
 
     vpin_df.to_csv("vpin_results.csv", index=False)
     print("Saved results to vpin_results.csv")
