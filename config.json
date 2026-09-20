@@ -6,5 +6,7 @@
     "vpin_window": 10,
     "cdf_lookback_days": 90,
     "start_date": "2020-01-01",
-    "zoom_center_date": "2025-10-10"
+    "zoom_center_date": "2025-10-10",
+    "fee_bps": 10,
+    "slippage_bps": 2
 }

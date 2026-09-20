@@ -1,0 +1,83 @@
+{
+  "status": "data_unavailable",
+  "created_utc": "2026-09-20T18:45:53.985294+00:00",
+  "requested_start": "2020-01-01",
+  "data_end_exclusive": "2026-09-20T00:00:00+00:00",
+  "config": {
+    "symbol": "BNBUSDT",
+    "bucket_target_bars_per_day": 252,
+    "adv_lookback_days": 90,
+    "bucket_size_base": null,
+    "vpin_window": 10,
+    "cdf_lookback_days": 90,
+    "start_date": "2020-01-01",
+    "zoom_center_date": "2025-10-10",
+    "latest_zoom_days_back": 14,
+    "fee_bps": 10,
+    "slippage_bps": 2
+  },
+  "source_sha256": {
+    "market_data.py": "3ea63dd512d63a8a7df22b1f41144329c774c1ee008cc3016fbbb4320c4c83fe",
+    "vpin_calculator.py": "4f4cce8a50e979c286ab68e36dbb2238aeab02ad5e27985b6cb6ecb32a895e4f",
+    "vpin_backtest.py": "c884616b70e04216840bce263f0cedaddf60a41ac9ce572a2064ec65e083684b",
+    "vpin_optuna_optimize.py": "e2e6b0ca9467a94fd2226758c7bcf0c5f7665980769b5c3df3cae0d97edc3aff",
+    "test_vpin.py": "20116655538e745a13d525f7452732b3d85947619dee1f82a068ac96594dc6d6",
+    "config.json": "cae9429bcec74c18fc2551cadf15496c07727b4739aa95be91f7a260b38d06bf"
+  },
+  "git_head": "3c3d552460ff4aa6f5a6636617e182aeed317198",
+  "git_dirty": true,
+  "python": "3.14.2",
+  "packages": {
+    "numpy": "2.4.1",
+    "pandas": "2.3.3",
+    "aiohttp": "3.13.3",
+    "pyarrow": "22.0.0",
+    "matplotlib": "3.10.8",
+    "optuna": "4.6.0"
+  },
+  "tests": {
+    "command": "python -m unittest -q test_vpin",
+    "count": 33,
+    "passed": true
+  },
+  "search": {
+    "grid_combinations": 143,
+    "optuna_trials": 100,
+    "seed": 42,
+    "completed_grid": 0,
+    "completed_optuna": 0
+  },
+  "data_rows_observed": 3531413,
+  "data_rows_expected": 3533760,
+  "missing_candles": 2347,
+  "gap_intervals": 15,
+  "download_concurrency": 3,
+  "unvalidated_download_sha256": "8392a70c2926c9e7add3fd7dc6dceca883e6d8e2a21512d29ffa192398ac74d3",
+  "coverage_evidence_sha256": "f0266dbfd48311f3f94405817544c6af3045956bc7ba471bf4cfba5fda4c55bc",
+  "archive_cross_checks": [
+    {
+      "month": "2020-02",
+      "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-02.zip",
+      "sha256": "a1e525fa329ac711bb7ff96df9215eafd58895b1bc407633261599a5340e25d8",
+      "checksum_verified": true,
+      "rows": 41346,
+      "missing_minutes": 414
+    },
+    {
+      "month": "2023-03",
+      "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2023-03.zip",
+      "sha256": "9b5896c952fa761f41cdf329ddc532068517208320f3b8781ca52b03015e8e3b",
+      "checksum_verified": true,
+      "rows": 44560,
+      "missing_minutes": 80
+    }
+  ],
+  "continuous_alternative": {
+    "start": "2023-03-25T00:00:00+00:00",
+    "end_exclusive": "2026-09-20T00:00:00+00:00",
+    "rows": 1836000,
+    "selected": false
+  },
+  "error": "The requested history contains 2,347 missing one-minute candles across 15 intervals. All 15 direct API rechecks returned zero candles. Checksum-verified official archives for February 2020 and March 2023 contain the same omissions in those months. The searches were not started; no historical winner is claimed.",
+  "hash_convention": "sha256-lf-text-v1"
+}

@@ -1,243 +1,261 @@
-import asyncio
-import aiohttp
-import pandas as pd
-import numpy as np
-import os
-from datetime import datetime, timedelta
+"""Closed Binance minute candles, validated configuration, and an atomic cache."""
 
-# --- Constants ---
+import asyncio
+import json
+import os
+from pathlib import Path
+import tempfile
+
+import aiohttp
+import numpy as np
+import pandas as pd
+
 BINANCE_BASE_URL = "https://api.binance.com"
 MAX_RETRIES = 5
 CONCURRENT_REQUESTS = 10
+MINUTE = pd.Timedelta(minutes=1)
+CONFIG_FILE = Path(__file__).with_name("config.json")
+DEFAULT_CONFIG = {
+    "symbol": "BNBUSDT",
+    "bucket_target_bars_per_day": 252,
+    "adv_lookback_days": 90,
+    "bucket_size_base": None,
+    "vpin_window": 10,
+    "cdf_lookback_days": 90,
+    "start_date": "2020-01-01",
+    "zoom_center_date": None,
+    "latest_zoom_days_back": 14,
+    "fee_bps": 10,
+    "slippage_bps": 2,
+}
+KLINE_COLUMNS = [
+    "open_time", "open", "high", "low", "close", "volume", "close_time",
+    "quote_asset_volume", "number_of_trades", "taker_buy_base_asset_volume",
+    "taker_buy_quote_asset_volume", "ignore",
+]
+
+
+def load_config(path=CONFIG_FILE):
+    """Merge an optional JSON file with defaults; reject invalid or unknown settings."""
+    path = Path(path)
+    config = DEFAULT_CONFIG.copy()
+    if path.exists():
+        supplied = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(supplied, dict) or supplied.keys() - config.keys():
+            raise ValueError("Config must contain only supported settings")
+        config.update(supplied)
+
+    symbol = config["symbol"]
+    if not isinstance(symbol, str) or not symbol.isascii() or not symbol.isalnum():
+        raise ValueError("symbol must be an alphanumeric Binance symbol")
+    config["symbol"] = symbol.upper()
+
+    for key in ("bucket_target_bars_per_day", "adv_lookback_days", "vpin_window", "cdf_lookback_days"):
+        if type(config[key]) is not int or config[key] <= 0:
+            raise ValueError(f"{key} must be a positive integer")
+    for key in ("fee_bps", "slippage_bps", "bucket_size_base"):
+        value = config[key]
+        if key == "bucket_size_base" and value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
+            raise ValueError(f"{key} must be finite and numeric")
+        valid_range = value > 0 if key == "bucket_size_base" else 0 <= value < 10000
+        if not valid_range:
+            raise ValueError(f"Invalid {key}")
+
+    for key in ("start_date", "zoom_center_date"):
+        if key == "zoom_center_date" and config[key] is None:
+            continue
+        value = config[key]
+        if (
+            not isinstance(value, str)
+            or pd.to_datetime(value, format="%Y-%m-%d", utc=True).strftime("%Y-%m-%d") != value
+        ):
+            raise ValueError(f"{key} must use YYYY-MM-DD")
+    if type(config["latest_zoom_days_back"]) is not int or config["latest_zoom_days_back"] < 0:
+        raise ValueError("latest_zoom_days_back must be a nonnegative integer")
+    return config
+
 
 def get_data_file(symbol):
-    """Return the feather cache filename for a given symbol."""
     return f"{symbol.lower()}_1m.feather"
 
-async def fetch_kline_chunk(session, symbol, interval, start_time, end_time, limit=1000):
-    """
-    Fetch a single chunk of klines asynchronously with retry logic.
-    """
-    url = f"{BINANCE_BASE_URL}/api/v3/klines"
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "startTime": start_time,
-        "endTime": end_time,
-        "limit": limit
-    }
-    
-    # "Rate limit of like 50 ms" - adding delay before request
-    await asyncio.sleep(0.05)
-    
-    for attempt in range(MAX_RETRIES):
-        try:
-            async with session.get(url, params=params) as response:
-                if response.status == 429:
-                    wait_time = int(response.headers.get("Retry-After", 2 ** attempt))
-                    print(f"Rate limited. Waiting {wait_time}s...")
-                    await asyncio.sleep(wait_time)
-                    continue
-                
-                if response.status == 418:
-                    wait_time = int(response.headers.get("Retry-After", 60))
-                    print(f"IP Ban imminent! Waiting {wait_time}s...")
-                    await asyncio.sleep(wait_time)
-                    continue
 
-                if response.status != 200:
-                    print(f"Error fetching chunk {start_time}: Status {response.status}")
-                    await asyncio.sleep(2 ** attempt)
-                    continue
-                    
-                data = await response.json()
-                return data
-                
-        except Exception as e:
-            print(f"Exception fetching chunk {start_time}: {e}")
-            await asyncio.sleep(2 ** attempt)
-            
-    return []
+def validate_candles(df, start=None, end=None):
+    """Return a UTC copy with finite OHLC/base volumes and contiguous minute rows.
 
-async def download_historical_data_async(symbol, interval, start_ts, end_ts):
+    Naive timestamps mean UTC. Optional bounds require exact [start, end) coverage;
+    malformed prices, volumes, timestamps, or missing candles raise ValueError.
     """
-    Download historical data in parallel chunks.
-    """
-    print(f"Downloading data from {datetime.fromtimestamp(start_ts/1000)} to {datetime.fromtimestamp(end_ts/1000)}...")
-    
-    chunk_size_ms = 1000 * 60 * 1000 
-    
-    tasks = []
-    chunk_starts = range(start_ts, end_ts, chunk_size_ms)
-    
-    async with aiohttp.ClientSession() as session:
-        semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
-        
-        async def bound_fetch(s, e):
-            async with semaphore:
-                actual_end = min(e, end_ts)
-                return await fetch_kline_chunk(session, symbol, interval, s, actual_end)
-        
-        tasks = [bound_fetch(s, s + chunk_size_ms - 1) for s in chunk_starts]
-        results = await asyncio.gather(*tasks)
-        
-    all_data = []
-    for res in results:
-        if res:
-            all_data.extend(res)
-            
-    if not all_data:
-        return pd.DataFrame()
-        
-    df = pd.DataFrame(all_data, columns=[
-        "open_time", "open", "high", "low", "close", "volume", 
-        "close_time", "quote_asset_volume", "number_of_trades", 
-        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
-    ])
-    
-    numeric_cols = ["open", "high", "low", "close", "volume", "taker_buy_base_asset_volume", "quote_asset_volume", "taker_buy_quote_asset_volume"]
-    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, axis=1)
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
-    
+    if df.empty:
+        raise ValueError("No minute candles available")
+    df = df.copy()
+    for name in ("open_time", "close_time"):
+        df[name] = pd.to_datetime(df[name], utc=True)
+    times = df["open_time"]
+    if times.isna().any() or not times.is_monotonic_increasing or times.duplicated().any():
+        raise ValueError("Candles must have unique, increasing UTC opening times")
+    if (times != times.dt.floor("min")).any() or not times.diff().iloc[1:].eq(MINUTE).all():
+        raise ValueError("Missing or misaligned minute candles")
+    if not df["close_time"].eq(times + MINUTE - pd.Timedelta(milliseconds=1)).all():
+        raise ValueError("Invalid minute candle closing times")
+    numeric = ["open", "high", "low", "close", "volume", "taker_buy_base_asset_volume"]
+    df[numeric] = df[numeric].apply(pd.to_numeric)
+    if not np.isfinite(df[numeric].to_numpy()).all():
+        raise ValueError("Candle prices and volumes must be finite")
+    if (df[["open", "high", "low", "close"]] <= 0).any().any():
+        raise ValueError("Candle prices must be positive")
+    invalid_high = df["high"] < df[["open", "close", "low"]].max(axis=1)
+    invalid_low = df["low"] > df[["open", "close", "high"]].min(axis=1)
+    if invalid_high.any() or invalid_low.any():
+        raise ValueError("Inconsistent candle high/low prices")
+    volume, buy_volume = df["volume"], df["taker_buy_base_asset_volume"]
+    if ((volume < 0) | (buy_volume < 0) | (buy_volume > volume)).any():
+        raise ValueError("Require 0 <= taker-buy volume <= total volume")
+    if start is not None and times.iloc[0] != pd.to_datetime(start, utc=True):
+        raise ValueError("Requested start is not covered by the data")
+    if end is not None and times.iloc[-1] + MINUTE != pd.to_datetime(end, utc=True):
+        raise ValueError("Requested end is not covered by the data")
     return df
 
-def manage_local_data(symbol, interval="1m", start_date_dt=None):
-    """
-    Load local feather file, update it with new data (forward and backward), and save back.
-    Ensures no duplicates and checks for gaps.
-    """
-    data_file = get_data_file(symbol)
-    df_existing = pd.DataFrame()
-    now_ts = datetime.now()
 
-    # 1. Load existing
-    if os.path.exists(data_file):
+async def fetch_kline_chunk(session, symbol, interval, start_time, end_time, limit=1000):
+    """Binance bounds are inclusive; failures must not look like empty data."""
+    params = dict(symbol=symbol, interval=interval, startTime=start_time, endTime=end_time, limit=limit)
+    error = "no response"
+    for attempt in range(MAX_RETRIES):
+        delay = 2 ** attempt
         try:
-            df_existing = pd.read_feather(data_file)
-            print(f"Loaded {len(df_existing)} rows from {data_file}")
-        except Exception as e:
-            print(f"Error loading cache: {e}. Starting fresh.")
-    
-    # 1b. Skip downloads if the cache was updated recently
-    if not df_existing.empty:
-        try:
-            mtime = datetime.fromtimestamp(os.path.getmtime(data_file))
-            if now_ts - mtime < timedelta(minutes=15):
-                print(f"Last data update was {mtime} (<15 minutes ago). Skipping downloads.")
-                return df_existing
-        except Exception as e:
-            print(f"Could not read cache mtime: {e}")
-    
-    end_ts = int(now_ts.timestamp() * 1000)
-    
-    # List of new dataframes to concat
-    dfs_to_concat = []
-    if not df_existing.empty:
-        dfs_to_concat.append(df_existing)
+            await asyncio.sleep(0.05)
+            async with session.get(f"{BINANCE_BASE_URL}/api/v3/klines", params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if not isinstance(data, list):
+                        raise ValueError("Expected a kline array")
+                    return data
+                error = f"HTTP {response.status}"
+                if response.status in (429, 418):
+                    delay = max(delay, float(response.headers.get("Retry-After", delay)))
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            error = str(exc)
+        if attempt + 1 < MAX_RETRIES:
+            await asyncio.sleep(delay)
+    raise RuntimeError(f"Kline download failed for {symbol} at {start_time}: {error}")
 
-    # 2a. Forward Fill (Newer data)
-    if not df_existing.empty:
-        last_time = df_existing["open_time"].max()
-        forward_start_ts = int(last_time.timestamp() * 1000) + 60000 
+
+async def download_historical_data_async(symbol, interval, start_ts, end_ts):
+    """Return 1m klines with UTC timestamps for [start_ts, end_ts), in epoch milliseconds.
+
+    The caller sets end_ts to a closed-minute cutoff. Empty exchange responses are
+    allowed here; manage_local_data enforces coverage before saving or analysis.
+    """
+    if interval != "1m":
+        raise ValueError("Only 1m candles are supported")
+    chunk_ms = 1000 * 60_000
+    # Use the working OS resolver rather than an optional aiodns installation.
+    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+    async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=60)) as session:
+        semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
+
+        async def fetch(start):
+            async with semaphore:
+                inclusive_end = min(start + chunk_ms, end_ts) - 1
+                return await fetch_kline_chunk(session, symbol, interval, start, inclusive_end)
+
+        chunks = await asyncio.gather(*(fetch(start) for start in range(start_ts, end_ts, chunk_ms)))
+    df = pd.DataFrame([row for chunk in chunks for row in chunk], columns=KLINE_COLUMNS)
+    for name in ("open_time", "close_time"):
+        df[name] = pd.to_datetime(df[name], unit="ms", utc=True)
+    numeric = [
+        "open", "high", "low", "close", "volume", "taker_buy_base_asset_volume",
+        "quote_asset_volume", "taker_buy_quote_asset_volume",
+    ]
+    df[numeric] = df[numeric].apply(pd.to_numeric)
+    return df
+
+
+def manage_local_data(symbol, interval="1m", start_date_dt=None, *, now=None):
+    """Return closed UTC candles from start_date_dt through floor(now, minute), exclusive.
+
+    Repair coverage and refresh two overlapping rows before atomically saving the
+    validated cache. Legacy naive-time caches are rebuilt; failed validation leaves
+    the old file intact. Omitting now uses the current UTC clock.
+    """
+    if interval != "1m":
+        raise ValueError("Only 1m candles are supported")
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.to_datetime(now, utc=True)
+    end = now.floor("min")
+    path = Path(get_data_file(symbol))
+    cached = pd.read_feather(path) if path.exists() else pd.DataFrame()
+
+    # Old naive-time caches may contain permanently truncated historical candles.
+    if not cached.empty and not isinstance(cached["open_time"].dtype, pd.DatetimeTZDtype):
+        print("Rebuilding legacy cache; original stays intact until validation succeeds.")
+        cached = pd.DataFrame()
+    if not cached.empty:
+        for name in ("open_time", "close_time"):
+            cached[name] = pd.to_datetime(cached[name], utc=True)
+        cached = cached[(cached["open_time"] < end) & (cached["close_time"] < end)]
+        cached = (
+            cached.drop_duplicates("open_time", keep="last")
+            .sort_values("open_time").reset_index(drop=True)
+        )
+
+    if start_date_dt is not None:
+        requested_start = pd.to_datetime(start_date_dt, utc=True)
+    elif not cached.empty:
+        requested_start = cached["open_time"].min()
     else:
-        # If empty, we start from start_date_dt or reasonable default
-        if start_date_dt:
-            forward_start_ts = int(start_date_dt.timestamp() * 1000)
-        else:
-            # Default to 2 days ago if no start date provided and no existing data
-            forward_start_ts = int((now_ts - timedelta(days=2)).timestamp() * 1000)
+        requested_start = end - pd.Timedelta(days=2)
+    if requested_start != requested_start.floor("min") or requested_start >= end:
+        raise ValueError("Requested start must be minute-aligned and precede the closed-data cutoff")
+    start = min(requested_start, cached["open_time"].min()) if not cached.empty else requested_start
 
-    if forward_start_ts < end_ts:
-        print(f"Checking for new data from {datetime.fromtimestamp(forward_start_ts/1000)}...")
-        try:
-            df_forward = asyncio.run(download_historical_data_async(symbol, interval, forward_start_ts, end_ts))
-            if not df_forward.empty:
-                 print(f"Downloaded {len(df_forward)} new rows (forward fill).")
-                 dfs_to_concat.append(df_forward)
-        except Exception as e:
-            print(f"Async download (forward) failed: {e}")
-
-    # 2b. Backward Fill (Older data)
-    if not df_existing.empty and start_date_dt:
-        first_time = df_existing["open_time"].min()
-        # If existing data starts AFTER requested start date, we need to backfill
-        if first_time > start_date_dt:
-            backfill_end_ts = int(first_time.timestamp() * 1000) - 60000
-            backfill_start_ts = int(start_date_dt.timestamp() * 1000)
-            
-            if backfill_start_ts < backfill_end_ts:
-                print(f"Backfilling data from {start_date_dt} to {first_time}...")
-                try:
-                    df_backward = asyncio.run(download_historical_data_async(symbol, interval, backfill_start_ts, backfill_end_ts))
-                    if not df_backward.empty:
-                        print(f"Downloaded {len(df_backward)} older rows (backfill).")
-                        dfs_to_concat.append(df_backward)
-                except Exception as e:
-                    print(f"Async download (backward) failed: {e}")
-
-    # 3. Merge and Save
-    if not dfs_to_concat:
-        print("No data in cache or downloaded.")
-        return pd.DataFrame()
-        
-    df_combined = pd.concat(dfs_to_concat)
-        
-    # 4. Sanity Checks
-    initial_len = len(df_combined)
-    df_combined = df_combined.drop_duplicates(subset=["open_time"]).sort_values("open_time").reset_index(drop=True)
-    dedup_len = len(df_combined)
-    if initial_len != dedup_len:
-        print(f"Removed {initial_len - dedup_len} duplicate rows.")
-        
-    time_diff = df_combined["open_time"].diff()
-    gaps = time_diff[time_diff > timedelta(minutes=1)]
-    if not gaps.empty:
-        print(f"WARNING: Found {len(gaps)} potential data gaps!")
-        print(gaps.head())
+    if cached.empty:
+        ranges = [(start, end)]
     else:
-        print("Data continuity check passed (no gaps > 1m).")
-        
-    df_combined.to_feather(data_file)
-    print(f"Saved updated data to {data_file}")
-    
-    return df_combined
+        expected = pd.date_range(start, end, freq="min", inclusive="left")
+        missing = expected.difference(cached["open_time"])
+        missing = missing.union(pd.DatetimeIndex(cached["open_time"].tail(2))).sort_values()
+        # Group adjacent missing/overlapping minutes into single download requests.
+        breaks = (missing[1:] - missing[:-1]) != MINUTE
+        range_starts = missing[np.r_[True, breaks]]
+        range_ends = missing[np.r_[breaks, True]] + MINUTE
+        ranges = zip(range_starts, range_ends)
 
+    frames = [cached] if not cached.empty else []
+    for left, right in ranges:
+        fetched = asyncio.run(download_historical_data_async(
+            symbol, interval, int(left.timestamp() * 1000), int(right.timestamp() * 1000)
+        ))
+        if not fetched.empty:
+            for name in ("open_time", "close_time"):
+                fetched[name] = pd.to_datetime(fetched[name], utc=True)
+            in_range = (fetched["open_time"] >= left) & (fetched["open_time"] < right)
+            closed = fetched["close_time"] < end
+            frames.append(fetched[in_range & closed])
+    if not frames:
+        raise ValueError("No data downloaded for the requested period")
+    combined = (
+        pd.concat(frames, ignore_index=True)
+        .drop_duplicates("open_time", keep="last")
+        .sort_values("open_time").reset_index(drop=True)
+    )
+    combined = validate_candles(combined, start, end)
 
-async def get_adv_async(symbol, days=90):
-    """
-    Quick async fetch for daily data to compute ADV.
-    """
-    end_ts = int(datetime.now().timestamp() * 1000)
-    start_ts = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
-    df = await download_historical_data_async(symbol, "1d", start_ts, end_ts)
-    if df.empty:
-        raise ValueError("Could not fetch daily data for ADV")
-    return df["volume"].mean()
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.resolve().parent, suffix=".feather", delete=False) as handle:
+            temporary = Path(handle.name)
+        combined.to_feather(temporary)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    print(f"Validated {len(combined):,} closed candles in {path}")
+    return combined[combined["open_time"] >= requested_start].reset_index(drop=True)
 
 
 if __name__ == "__main__":
-    import json
-    
-    # Load config if available, else defaults
-    config_path = "config.json"
-    symbol = "BNBUSDT"
-    start_date_str = "2025-01-01"
-    
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r") as f:
-                conf = json.load(f)
-                symbol = conf.get("symbol", symbol)
-                start_date_str = conf.get("start_date", start_date_str)
-                print(f"Loaded config: Symbol={symbol}, Start={start_date_str}")
-        except Exception as e:
-            print(f"Failed to load config: {e}. Using defaults.")
-    
-    try:
-        start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
-    except:
-        start_dt = datetime(2025, 1, 1)
-        
-    print(f"--- Starting Standalone Data Download for {symbol} ---")
-    manage_local_data(symbol, "1m", start_date_dt=start_dt)
+    config = load_config()
+    manage_local_data(config["symbol"], start_date_dt=config["start_date"])

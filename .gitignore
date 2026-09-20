@@ -1,9 +1,20 @@
-docs/book_VPIN.pdf
+/docs/Algorithmic and High-Frequency Trading.pdf
+/docs/Marcos Lopez de Prado - Advances in Financial Machine Learning (2018, Wiley) - libgen.li.pdf
+/docs/Stefan Jansen - Machine Learning for Algorithmic Trading_ Predictive models to extract signals from market and alternative data for systematic (2020, Packt Publishing) - libgen.li.pdf
 *.feather
 __pycache__/
 *.pyc
 vpin_results.csv
-tmpclaude-*
+vpin_extreme_events.csv
+vpin_backtest_results.csv
+vpin_optuna_results.csv
+vpin_plot*.png
+vpin_backtest_equity.png
+/tmp/
+/output/pdf/*.aux
+/output/pdf/*.log
+/output/pdf/*.out
+/output/pdf/*.toc
 
 # Secrets — the real .env must never be committed.
 .env
